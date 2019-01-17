@@ -1,0 +1,335 @@
+---
+title: "The Movie Database -Analysis"
+author: "Deepak Kumar G S"
+date: "October 31, 2017"
+output:
+ html_document:
+    toc: yes
+    code_folding: hide
+    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning=FALSE,message = FALSE)
+```
+
+# Introduction 
+
+* This dataset consist of list of curated set of movies for our analysis.There are two datasets - one consists of details on movies and the other on credits.Let us analyse both to answer questions like which director gets paid the most,which is the highest grossing movie,who has worked in most films,which movie has highest budget etc.
+
+**If you like this kernal,pls upvote and encourage**
+
+
+# Loading the data and summary {.tabset .tabset-fade}
+
+```{r}
+library(plyr) #data manipulation
+library(tidyverse)# data manipulation
+library(formattable)# table
+library(splitstackshape) # split columns
+library(jsonlite) #JSON format 
+library(wordcloud) #wordcloud
+library(RColorBrewer) # Color Theme
+library(ggthemes) #Themes for plot
+library(tm) # Sentiment Analysis 
+library(RSentiment) # Sentiment Analysis
+library(zoo) # Time 
+library(stringr) #String Manipulation
+movie=read_csv("../input/tmdb_5000_movies.csv",col_names=TRUE,na="NA")
+credits=read_csv("../input/tmdb_5000_credits.csv",col_names=TRUE,na="NA")
+```
+
+## Movie dataset
+
+```{r}
+glimpse(movie)
+summary(movie)
+```
+
+## Credits dataset
+
+```{r}
+glimpse(credits)
+summary(credits)
+```
+
+From the summary  & glimpse of the data,the number of observations is 4803 with 20 variables.
+
+# Data Cleaning 
+
+From the dataset,it is easy to infer that some cleaning need to be done before we can decipher information.Lets do it first.
+
+## Cleaning the Movie Dataset
+
+Some of the columns are in JSON format.We use jsonlite library to extract the data.This code is inspired from this [kernal](https://www.kaggle.com/epfreed/tidydata-movie-dataset-exploration/notebook) 
+
+
+```{r}
+genredf=movie %>% filter(nchar(genres)>2) %>% mutate(js=lapply(genres,fromJSON)) %>% unnest(js) %>% select(id,title,genre=name) #Convert JSON format into data frame
+slice(genredf)
+```
+
+##  Wordcloud of Genre Representation
+
+```{r}
+#genre=aggregate(genre ~.,data=genre,paste,collapse=",") # remove duplicates 
+temp=genredf %>% group_by(genre) %>% summarise(count=length(genre)) %>% arrange(desc(count))#A look at the genre variety in our dataset
+#wordcloud
+wordcloud(words=temp$genre,freq=temp$count,min.freq=100,max.words = 20,random.order=FALSE,random.color=FALSE,rot.per=0.35,colors = brewer.pal(20,"Dark2"),scale=c(5,.2))
+```
+
+From the wordcloud it is understood that Comedy,Drama,Thriller and action are most represented.
+
+# Highest Budget& Revenue Movies{.tabset .tabset-fade}
+
+## Movie with Highest Budget
+
+```{r,fig.width=7,fig.height=8}
+movie %>% select(original_title,budget) %>% drop_na(original_title)%>% arrange(desc(budget)) %>% head(10) %>%  ggplot(aes(reorder(original_title,budget),budget,fill=original_title))+geom_bar(stat="identity")+theme(axis.text.x = element_text(angle=90),plot.title=element_text(color="Red",face="italic"),legend.position="none")+scale_y_continuous(labels=scales::comma)+labs(x="",y="Total Budget in $",title="Most Expensive Movies -Top 10")
+```
+
+From the graph,it is noted that the pirates of caribbean series has the highest budget followed by Avengeres.
+
+## Highest grossing movies 
+
+
+```{r,fig.width=7,fig.height=8}
+movie %>% select(original_title,revenue) %>% drop_na(original_title)%>% arrange(desc(revenue)) %>% head(10)  %>% ggplot(aes(reorder(original_title,revenue),revenue,fill=original_title))+geom_bar(stat="identity")+theme(axis.text.x = element_text(angle=90),plot.title=element_text(color="Red",face="italic"),legend.position="none")+scale_y_continuous(limits=c(0,3000000000),breaks=seq(0,3000000000,500000000),labels=scales::comma)+labs(x="",y="Total Revenue in $",title="Highest Grossing Movies -Top 10")
+```
+
+Avarar holds the record of highest grossing movie collecting a little over 2.6 billion USD.Next comes the classic movie Titanic.Incidentally,both these movies were epic work of director James Cameron.But the revenue difference is huge between Titanic and Avatar.This difference is decreasing as we go down with Furious 7,Jurassic World,The avengers collecting almost same revenue.This seems little weird and need to be verified with authentic data from the production company.
+
+
+# Movies with highest popularity:
+
+Consider the top 10 movies in accordance to the popularity.
+
+```{r,fig.width=10}
+movie %>% group_by(original_title) %>% arrange(desc(popularity)) %>% head(10) %>% ggplot(aes(factor(original_title,levels=original_title),popularity,fill=original_title))+geom_bar(stat="identity")+theme_few()+theme(axis.text.x=element_text(angle=90,hjust=0.5),plot.title=element_text(hjust=0.5,size=15,color="red"),legend.position="none")+labs(x="Title",y="Rating",title="Popularity of Movies")+scale_x_discrete(labels=function(x)str_wrap(x,width=15))
+
+```
+
+
+From the graph,it is seen that Minions is the most popular movie having rating greater than 750 followed by Interstellar and Deadpool.
+
+
+
+# Production Companies 
+
+The production companies are in JSON format.Therefore,we try to covert it into data.frame similar to genre.We then try to find out which production company is represented most in the dataset.
+
+
+```{r}
+production=movie %>% filter(nchar(production_companies)>2) %>% mutate(js=lapply(production_companies,fromJSON)) %>% unnest(js) %>% select(budget,revenue,company=name)
+lapply(production,class)
+temp=production %>% group_by(company) %>% summarise(count=n()) %>% arrange(desc(count)) 
+wordcloud(words=temp$company,freq=temp$count,max.words = 25,color =rainbow(7),scale=c(2,0.2))
+```
+
+Warner Bros,Universal Pictures,Parmount Pictures,20th century fox are represented more in this dataset.
+
+# Exploring the tagline
+
+Let us try to process the tagline information and gather information on most used tagwords for the movie and do an sentiment analysis for the tagline.We use tm library and Rsentiments for this analysis.First we create term matrix and then analyse the sentiment.
+
+
+```{r}
+#This code is inspired from this [kernal](https://www.kaggle.com/donyoe/sentiment-analysis).
+corpus=Corpus(VectorSource(list(movie$tagline)))
+corpus=tm_map(corpus,removePunctuation)
+corpus=tm_map(corpus,content_transformer(tolower))
+corpus=tm_map(corpus,stripWhitespace)
+corpus=tm_map(corpus,removeWords,stopwords("english"))
+dtm_tag=DocumentTermMatrix(VCorpus(VectorSource(corpus[1]$content)))
+freq_tag=colSums(as.matrix(dtm_tag))
+
+```
+
+```{r,results="hide",message=FALSE,warning=FALSE}
+sent_tag=calculate_sentiment(names(freq_tag)) %>% cbind(as.data.frame(freq_tag))
+```
+
+
+Now its time to calcuate the sentiment.
+
+```{r}
+positive=sent_tag[sent_tag$sentiment=="Positive",]
+negative=sent_tag[sent_tag$sentiment=="Negative",]
+cat("Positive Sentiment:",sum(positive$freq_tag),"Negative Sentiment:",sum(negative$freq_tag),sep="\n")
+```
+
+## Wordcloud:
+
+```{r}
+par(mfrow=c(1,2))
+wordcloud(positive$text,positive$freq_tag, min.freq=10,rot.per=0,vfont=c("sans serif","plain"))
+text(x=0.5, y=1.05, "Positive",col=brewer.pal(4, "Reds"))
+wordcloud(negative$text,negative$freq_tag, min.freq=7,rot.per=0,vfont=c("sans serif","plain"))
+text(x=0.5, y=1.05, "Negative",col=brewer.pal(4, "Reds"))
+```
+
+* Words like love,adventure,new,comedy,hero,like,dream are represented more as a tagline if it is a positive one and never,revenge,dead,war,fear feature commonly if the sentiment is negative.
+
+
+#Release date,year,month
+
+## Which year has seen maximum release of movies ?
+
+```{r}
+class(movie$release_date)
+movie$Year=as.factor(format(movie$release_date,"%Y"))
+movie$Date=as.factor(format(movie$release_date,"%d"))
+movie$month=month.abb[(as.factor(format(movie$release_date,"%m")))]
+movie %>% group_by(month) %>% drop_na(month) %>% summarise(count=n()) %>% arrange(desc(month)) %>% ggplot(aes(reorder(month,count),count,fill=month))+geom_bar(stat="identity")+theme(plot.title=element_text(size=14,face="italic",colour="red"),axis.text.x = element_text(angle=90),legend.position="none")+labs(x="",y="Total number of movies released",title="Number of Movies Releases per month")+coord_flip()+geom_label(aes(label=count))
+```
+
+* The year September has seen maximum releases followed by October.This seems to contray to the popular belief that august-september is termed as **dump month** among the hollywood film industry the reason being the number of movie goers becomes lean during these periods with starting of the school year and other reasons.Due to these,the movies released do not earn much and ends up as a scrap.But this is not so going by the dataset.
+
+* Also ,Jan-Feb are considered as summer dump months.
+
+* To know about the actual scenario we consider going by the rating of the movies released every month and visualize it to understand the *quality* of the movies.
+
+##  Does higher number correlate to higher quality content ?
+
+```{r}
+movie %>% drop_na(month) %>% ggplot(aes(month,vote_average,fill=month))+geom_boxplot(outlier.colour = "red",na.rm=TRUE)+theme(plot.title=element_text(size=14,face="italic",colour="red"),axis.text.x = element_text(angle=90),legend.position="none")+labs(x="",y="Average Vote",title="Boxplot of Average votes received by month")+coord_flip()
+```
+
+
+* From the boxplot,it can be infered that the median for the month of december is highest of all.
+* The votes are more spread out for the month of september in the lower range.
+* All the months have got a rating of 0.0 for a movie.This may be a typo.We remove this value to do further analysis.
+
+
+```{r,fig.align="center",fig.width=6}
+movie$month=factor(movie$month,levels=month.abb,ordered=TRUE)
+#temp=movie %>% group_by(month) %>% filter(vote_average!=0)%>%  #summarise(median=median(vote_average),low=min(vote_average),high=max(vote_average)) %>% mutate(score=paste(low,"/",high))
+temp=movie %>% drop_na(vote_average,month) %>% filter(vote_average!=0) %>% ddply(.(month),function(x){c(mid=median(x$vote_average),low=min(x$vote_average),high=max(x$vote_average))})
+temp=temp[order(temp$month),]
+formattable(temp,align=c("l","c","c","c"),list(mid=color_tile('lightblue','white'),low=color_bar('orange'),high=color_bar('lightgreen')))
+
+```
+
+* From the table,it is found that the median vote count is within 6.
+* The month Jan,May,June,July and august have  atleast 1 movies with rating of 10.0 But Jan also has movies with rating of 0.5.
+
+
+
+Let us now move into credits dataset and explore.The columns are in json format and like we did for geners we use the *jsonlite* library to convert it into proper format.
+
+```{r}
+credit=credits %>% filter(nchar(cast)>2) %>% mutate(js=lapply(cast,fromJSON)) %>% unnest(js)
+cat("Before JS the columns are ",names(credit),sep='\n')
+credit= credit%>% select(-c(crew,cast_id,credit_id,id))
+cat("After removing id columns the names are",names(credit),sep='\n')
+```
+
+#Artist with most movies:
+Let us see which artist has acted in more movies
+
+```{r}
+credit %>% group_by(name) %>% tally() %>% arrange(desc(n)) %>% head(10) %>% ggplot(aes(factor(name,levels=name),n,fill=name))+geom_bar(stat="identity")+labs(x="Artist",y="Count",title="Top 10 artist with most movies")+theme_few()+theme(axis.text.x=element_text(angle=90),plot.title=element_text(hjust=0.5,color="red"),legend.position="none")
+```
+
+Samuel L Jackson,Robert De Niro tops the list with more than 50+ movies in the database provided.Let us see each of their popular movies.For this I do a joint operation of the credits and movie table with id column and then remove the json format.
+
+
+# Popular movies of the artist with most movies:{.tabset .tabset-pill}
+
+```{r,fig.height=8}
+db=movie %>% left_join(credits,by=c("id"="movie_id"))
+db_credit=db %>% filter(nchar(cast)>2) %>% mutate(js=lapply(cast,fromJSON)) %>% unnest(js)
+revenue=function (df,col_name,x,y,title){
+ temp_df=df %>% filter(name==col_name) %>% arrange(desc(revenue)) %>% head(10)
+ df_plot= ggplot(temp_df,aes(reorder(original_title,revenue),revenue,fill=original_title))+geom_bar(stat="identity")+theme_few()+theme(axis.text.x = element_text(angle=90,vjust=0.5),plot.title=element_text(hjust=0.5,size=15),legend.position="none")+labs(x=x,y=y,title=title)+coord_flip()+scale_x_discrete(labels=function(x)str_wrap(x,width=15))+scale_y_continuous(labels=scales::comma)
+ print(df_plot)
+ 
+}
+```
+
+
+## Samuel L.Jackson:
+
+```{r,fig.height=9,fig.width=6}
+revenue(db_credit,col_name="Samuel L. Jackson",x="Title",y="Revenue",title="Samuel L.Jackson-Top 10 by revenue" )
+```
+
+
+## Robert De Niro:
+```{r}
+revenue(db_credit,col_name="Robert De Niro",x="Title",y="Revenue",title="Robert De Niro-Top 10 by revenue" )
+```
+
+
+## Bruce Willis:
+
+
+```{r}
+revenue(db_credit,col_name="Bruce Willis",x="Title",y="Revenue",title="Bruce Willis-Top 10 by revenue" )
+```
+
+
+## Matt Damon:
+
+
+```{r}
+revenue(db_credit,col_name="Matt Damon",x="Title",y="Revenue",title="Matt Damon-Top 10 by revenue" )
+```
+
+
+## Morgan Freeman:
+
+
+```{r}
+revenue(db_credit,col_name="Morgan Freeman",x="Title",y="Revenue",title="Morgan Freeman-Top 10 by revenue")
+```
+
+# Artist with High Budget Movies :
+
+
+Let us see which artists movies have been made at high budgets.
+
+```{r}
+db_credit %>%  filter(order==0) %>% group_by(name) %>% summarise(total=sum(budget)) %>% arrange(desc(total)) %>% head(10) %>% ggplot(aes(factor(name,levels=name),total,fill=name))+geom_bar(stat="identity")+theme(legend.position="none",plot.title=element_text(size=10,hjust=0.5),axis.text.x=element_text(angle=90))+labs(x="Actor Name",y="Sum of the budget",title="Actor with Highest Budgets till date..")+scale_y_continuous(labels=scales::comma)
+```
+
+Tom Cruise movies have always been on a higher budget followed by Bruce Wills.Let us compare the popularity of the movies with respect to their top 10 high budget.
+
+# Does high budget movie necessarily mean high popularity among viewers? {.tabset .tabset-pill}
+
+Let us correlate budget and popularity and see if there exist any correlation.
+
+```{r}
+get_cor <- function(df){
+    m <- cor(df$x,df$y, use="pairwise.complete.obs");
+    eq <- substitute(expr=r==cor,env=list(cor=format(m, digits = 4)))
+    return(as.character(as.expression(eq) ))                
+}
+
+temp=db_credit %>%  select(budget,popularity) %>% distinct() 
+ggplot(temp,aes(budget,popularity))+stat_bin_hex(bins=15)+scale_fill_distiller(palette="Spectral")+stat_smooth(method="lm",color="orchid",size=2)+scale_x_continuous(labels=scales::comma)
+get_cor(data.frame(x=temp$budget,y=temp$popularity))
+```
+
+
+## For Tom Cruise
+
+```{r,fig.height=7}
+temp=db_credit %>% filter(name=="Tom Cruise") %>% subset(!(duplicated(original_title))) %>% arrange(desc(budget)) %>% head(20)  
+
+ggplot(temp,aes(budget,as.integer(popularity),col=factor(original_title),size=popularity))+geom_point()+stat_smooth(method="lm",color="orchid",size=2)+theme(legend.position="bottom",plot.title=element_text(hjust=0.5,size=10),axis.text.x = element_text(angle = 90,hjust=0.5))+labs(x="Revenue",y="Popularity",title="Tom Cruise-Correlation between popularity and budget",subtitle="Filter by Top 20 Higest budget movies")+scale_x_continuous(labels=scales::comma)
+```
+
+It seems that there exists a linear line between revenue and popularity for tom cruise movies as shown in the plot.
+
+
+## For Bruce Wills:
+
+```{r}
+temp=db_credit %>% filter(name=="Bruce Willis") %>% subset(!(duplicated(original_title))) %>% arrange(desc(budget)) %>% head(20)  
+
+ggplot(temp,aes(budget,as.integer(popularity),col=factor(original_title),size=popularity))+geom_point()+stat_smooth(method="lm",color="orchid",size=2)+theme(legend.position="bottom",plot.title=element_text(hjust=0.5,size=10),axis.text.x = element_text(angle = 90,hjust=0.5))+labs(x="Revenue",y="Popularity",title="Bruce Wills-Correlation between popularity and budget",subtitle="Filter by Top 20 Higest budget movies")+scale_x_continuous(labels=scales::comma)
+```
+
+
+**Work in progress...**
